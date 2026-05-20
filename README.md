@@ -1,4 +1,4 @@
-# x402joke
+# x402joker
 
 Tiny standalone x402 seller. Takes USDC, returns a Claude-generated joke. Stateless.
 
@@ -8,7 +8,7 @@ Built as a Next.js app so it deploys to Vercel with a `git push`. Uses the `x402
 
 ```
 ┌──────────┐  POST /api/buy (no X-PAYMENT)  ┌──────────┐
-│  client  │ ────────────────────────────▶  │ x402joke│
+│  client  │ ────────────────────────────▶  │ x402joker│
 └──────────┘  ◀── 402 + paymentReqs ─────── └──────────┘
      │
      │  POST hightop /api/actions/x402/sign (payTo, amount)
@@ -16,9 +16,9 @@ Built as a Next.js app so it deploys to Vercel with a `git push`. Uses the `x402
      │
      │  POST /api/buy with X-PAYMENT: <paymentHeader>
      │  ──────────────────────────▶
-     │                            x402joke → facilitator.verify
-     │                            x402joke → Claude (generateJoke)
-     │                            x402joke → facilitator.settle
+     │                            x402joker → facilitator.verify
+     │                            x402joker → Claude (generateJoke)
+     │                            x402joker → facilitator.settle
      │  ◀── 200 { joke } + X-PAYMENT-RESPONSE (tx hash)
 ```
 

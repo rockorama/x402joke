@@ -1,6 +1,6 @@
 export const metadata = {
-  title: 'x402joke',
-  description: 'x402 demo that sells Claude-generated jokes',
+  title: 'x402joker',
+  description: 'Pay-per-joke vending machine over x402. Self-describing endpoint for agents.',
 }
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

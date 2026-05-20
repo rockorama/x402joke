@@ -1,256 +1,157 @@
-'use client'
+import { headers } from 'next/headers'
 
-import { useEffect, useState } from 'react'
+export const dynamic = 'force-dynamic'
 
-type Step = { name: string; status: number; ok: boolean; note?: string }
-
-type BuyResult = {
-  joke?: string
-  theme?: string | null
-  requirements?: { payTo: string; amount: string; asset: string; network: string }
-  settlement?: { success?: boolean; transaction?: string; payer?: string; network?: string } | null
-  validBefore?: string
-  steps?: Step[]
-  error?: string
-  detail?: string
+function formatPrice(raw: string): string {
+  const stripped = raw.replace(/^\$/, '')
+  const normalized = stripped.startsWith('.') ? `0${stripped}` : stripped
+  return `$${normalized}`
 }
+const PRICE = formatPrice(process.env.JOKE_PRICE_USD || '$0.01')
+const NETWORK = process.env.X402_NETWORK || 'base'
+const PAYEE = process.env.JOKE_SHOP_PAYEE_ADDRESS || ''
+const USDC_BASE = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
+const USDC_BASE_SEPOLIA = '0x036CbD53842c5426634e7929541eC2318f3dCF7e'
+const USDC_ASSET = NETWORK === 'base-sepolia' ? USDC_BASE_SEPOLIA : USDC_BASE
 
-const STORAGE_KEY = 'x402joke-demo'
-
-export default function Home() {
-  const [hightopUrl, setHightopUrl] = useState('https://api-staging.hightop.com')
-  const [agentId, setAgentId] = useState('')
-  const [apiKey, setApiKey] = useState('')
-  const [theme, setTheme] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [result, setResult] = useState<BuyResult | null>(null)
-
-  // persist inputs locally so you don't re-paste on every reload
-  useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    if (raw) {
-      try {
-        const saved = JSON.parse(raw)
-        setHightopUrl(saved.hightopUrl || 'https://api-staging.hightop.com')
-        setAgentId(saved.agentId || '')
-        setApiKey(saved.apiKey || '')
-        setTheme(saved.theme || '')
-      } catch {}
-    }
-  }, [])
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ hightopUrl, agentId, apiKey, theme }))
-  }, [hightopUrl, agentId, apiKey, theme])
-
-  async function buy() {
-    setLoading(true)
-    setResult(null)
-    try {
-      const res = await fetch('/api/demo-buy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hightopUrl, agentId, apiKey, theme: theme.trim() || undefined }),
-      })
-      const body = (await res.json()) as BuyResult
-      setResult(body)
-    } catch (err) {
-      setResult({ error: 'request_failed', detail: err instanceof Error ? err.message : String(err) })
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  const canSubmit = agentId.trim() && apiKey.trim() && hightopUrl.trim() && !loading
+export default async function Home() {
+  const h = await headers()
+  const host = h.get('host') ?? 'x402joker.com'
+  const proto = h.get('x-forwarded-proto') ?? (host.startsWith('localhost') ? 'http' : 'https')
+  const origin = `${proto}://${host}`
+  const buyUrl = `${origin}/api/buy`
 
   return (
     <main>
-      <h1>🎭 x402joke</h1>
-      <p style={{ color: '#555' }}>
-        Paste your Hightop agent credentials, pick a theme, buy a joke. The server orchestrates:
-        probe → sign → retry.
+      <h1 style={{ marginBottom: 4 }}>🎭 x402joker</h1>
+      <p style={{ color: '#555', marginTop: 0 }}>
+        A vending machine for jokes. Pay <strong>{PRICE}</strong> USDC on{' '}
+        <strong>{NETWORK}</strong>, get a fresh Claude-generated joke.
       </p>
 
-      <div style={{ display: 'grid', gap: 12, marginTop: 24 }}>
-        <Field label="Hightop URL">
-          <input
-            value={hightopUrl}
-            onChange={(e) => setHightopUrl(e.target.value)}
-            placeholder="http://localhost:3000"
-            style={inputStyle}
-          />
-        </Field>
-        <Field label="Agent ID">
-          <input
-            value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-            placeholder="0bc67461-..."
-            style={inputStyle}
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </Field>
-        <Field label="Agent API Key">
-          <input
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="57f4de47..."
-            style={inputStyle}
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </Field>
-        <Field label="Theme (optional)">
-          <input
-            value={theme}
-            onChange={(e) => setTheme(e.target.value)}
-            placeholder="programming, cats, existential dread"
-            style={inputStyle}
-          />
-        </Field>
+      <section style={section}>
+        <h2 style={h2}>Endpoint</h2>
+        <pre style={code}>POST {buyUrl}</pre>
+        <p style={muted}>
+          Optional JSON body: <code>{'{ "theme": "string" }'}</code>. Omit for a surprise.
+        </p>
+      </section>
 
-        <button
-          onClick={buy}
-          disabled={!canSubmit}
-          style={{
-            padding: '12px 16px',
-            fontSize: 16,
-            fontWeight: 600,
-            border: 'none',
-            borderRadius: 8,
-            background: canSubmit ? '#111' : '#ccc',
-            color: 'white',
-            cursor: canSubmit ? 'pointer' : 'not-allowed',
-            marginTop: 8,
-          }}
-        >
-          {loading ? 'Buying a joke…' : 'Buy a joke'}
-        </button>
-      </div>
+      <section style={section}>
+        <h2 style={h2}>Payment</h2>
+        <dl style={dl}>
+          <KV k="Protocol" v="x402 (HTTP 402 + EIP-3009 signed transfer)" />
+          <KV k="Price" v={`${PRICE} USDC`} />
+          <KV k="Network" v={NETWORK} />
+          <KV k="Asset (USDC)" v={USDC_ASSET} mono />
+          {PAYEE && <KV k="Pay to" v={PAYEE} mono />}
+        </dl>
+      </section>
 
-      {result && <Result result={result} />}
+      <section style={section}>
+        <h2 style={h2}>How to buy (3 steps)</h2>
+        <ol style={{ paddingLeft: 20, lineHeight: 1.7 }}>
+          <li>
+            POST to the endpoint with no payment. You get <code>402 Payment Required</code> and a{' '}
+            <code>paymentRequirements</code> body.
+          </li>
+          <li>
+            Sign an EIP-3009 <code>transferWithAuthorization</code> matching those requirements and
+            base64-encode it as the <code>X-PAYMENT</code> header.
+          </li>
+          <li>
+            Retry the POST with the header. You get <code>200 { '{ joke }'}</code> and the on-chain
+            settlement tx hash in <code>X-PAYMENT-RESPONSE</code>.
+          </li>
+        </ol>
+      </section>
+
+      <section style={section}>
+        <h2 style={h2}>Try it with curl</h2>
+        <p style={muted}>Probe to see the payment requirements:</p>
+        <pre style={code}>{`curl -i -X POST ${buyUrl} \\
+  -H 'content-type: application/json' \\
+  -d '{"theme":"programming"}'`}</pre>
+        <p style={muted}>
+          Then sign the returned requirements with any x402 client (e.g. the{' '}
+          <a href="https://github.com/coinbase/x402" target="_blank" rel="noreferrer">
+            x402
+          </a>{' '}
+          SDK or an agent wallet), set <code>X-PAYMENT</code>, and POST again.
+        </p>
+      </section>
+
+      <section style={section}>
+        <h2 style={h2}>Discovery</h2>
+        <ul style={{ paddingLeft: 20, lineHeight: 1.7, fontSize: 14 }}>
+          <li>
+            <a href="/llms.txt">/llms.txt</a> — markdown overview for LLM/agent crawlers.
+          </li>
+          <li>
+            <a href="/api/buy">GET /api/buy</a> — JSON description of this endpoint (the POST is the
+            paid one).
+          </li>
+        </ul>
+      </section>
+
+      <section style={section}>
+        <h2 style={h2}>For agents</h2>
+        <p>
+          Any x402-aware HTTP client can consume this endpoint with no API keys, no signup, and no
+          allowlist. The 402 response is self-describing — the price, asset, network, and payee are
+          all there. Point your agent at <code>{buyUrl}</code> and let the protocol handle the rest.
+        </p>
+        <p style={muted}>
+          New to x402?{' '}
+          <a href="https://x402.org" target="_blank" rel="noreferrer">
+            x402.org
+          </a>{' '}
+          ·{' '}
+          <a href="https://github.com/coinbase/x402" target="_blank" rel="noreferrer">
+            github.com/coinbase/x402
+          </a>
+        </p>
+      </section>
 
       <footer style={{ marginTop: 48, fontSize: 12, color: '#888' }}>
-        Credentials are kept in your browser's localStorage. They're sent to this app's server to
-        proxy the Hightop sign call (avoids CORS). Don't paste prod creds here.
+        Stateless. No accounts. Jokes are not refundable, even the bad ones.
       </footer>
     </main>
   )
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function KV({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   return (
-    <label style={{ display: 'grid', gap: 4, fontSize: 13, fontWeight: 500 }}>
-      {label}
-      {children}
-    </label>
-  )
-}
-
-const inputStyle: React.CSSProperties = {
-  padding: '10px 12px',
-  fontSize: 14,
-  fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
-  border: '1px solid #ddd',
-  borderRadius: 6,
-  outline: 'none',
-  width: '100%',
-  boxSizing: 'border-box',
-}
-
-function Result({ result }: { result: BuyResult }) {
-  if (result.error) {
-    return (
-      <section style={{ marginTop: 24, padding: 16, background: '#fff4f4', border: '1px solid #f5bcbc', borderRadius: 8 }}>
-        <h2 style={{ marginTop: 0 }}>❌ {result.error}</h2>
-        {result.detail && <pre style={preStyle}>{result.detail}</pre>}
-        {result.steps && <Steps steps={result.steps} />}
-      </section>
-    )
-  }
-
-  return (
-    <section style={{ marginTop: 24, display: 'grid', gap: 16 }}>
-      <div
+    <>
+      <dt style={{ color: '#888' }}>{k}</dt>
+      <dd
         style={{
-          padding: 24,
-          background: '#fffbe6',
-          border: '1px solid #f0e0a0',
-          borderRadius: 12,
-          whiteSpace: 'pre-wrap',
-          fontSize: 16,
-          lineHeight: 1.5,
+          margin: 0,
+          fontFamily: mono ? 'ui-monospace, SFMono-Regular, Menlo, monospace' : undefined,
+          wordBreak: 'break-all',
         }}
       >
-        {result.joke}
-      </div>
-
-      <div style={{ display: 'grid', gap: 8, fontSize: 13 }}>
-        {result.theme && (
-          <KV label="Theme" value={result.theme} />
-        )}
-        {result.requirements && (
-          <>
-            <KV label="Paid" value={`${result.requirements.amount} (atomic) ${result.requirements.network}`} />
-            <KV label="To" value={result.requirements.payTo} mono />
-          </>
-        )}
-        {result.settlement?.transaction && (
-          <KV
-            label="Tx hash"
-            value={
-              <a
-                href={`https://basescan.org/tx/${result.settlement.transaction}`}
-                target="_blank"
-                rel="noreferrer"
-                style={{ fontFamily: 'ui-monospace, monospace' }}
-              >
-                {result.settlement.transaction}
-              </a>
-            }
-          />
-        )}
-        {result.settlement?.payer && <KV label="Payer" value={result.settlement.payer} mono />}
-      </div>
-
-      {result.steps && <Steps steps={result.steps} />}
-    </section>
+        {v}
+      </dd>
+    </>
   )
 }
 
-function KV({ label, value, mono }: { label: string; value: React.ReactNode; mono?: boolean }) {
-  return (
-    <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 8 }}>
-      <span style={{ color: '#888' }}>{label}</span>
-      <span style={mono ? { fontFamily: 'ui-monospace, monospace', wordBreak: 'break-all' } : { wordBreak: 'break-all' }}>
-        {value}
-      </span>
-    </div>
-  )
-}
-
-function Steps({ steps }: { steps: Step[] }) {
-  return (
-    <details style={{ fontSize: 12, color: '#555' }}>
-      <summary style={{ cursor: 'pointer' }}>Flow steps</summary>
-      <ul style={{ marginTop: 8, paddingLeft: 20 }}>
-        {steps.map((s, i) => (
-          <li key={i}>
-            {s.ok ? '✓' : '✗'} {s.name} — {s.status}
-          </li>
-        ))}
-      </ul>
-    </details>
-  )
-}
-
-const preStyle: React.CSSProperties = {
+const section: React.CSSProperties = { marginTop: 32 }
+const h2: React.CSSProperties = { fontSize: 16, marginBottom: 8 }
+const muted: React.CSSProperties = { color: '#666', fontSize: 14 }
+const code: React.CSSProperties = {
   background: '#f6f6f6',
   padding: 12,
   borderRadius: 6,
-  fontSize: 12,
-  overflow: 'auto',
-  whiteSpace: 'pre-wrap',
-  wordBreak: 'break-all',
+  fontSize: 13,
+  overflowX: 'auto',
+  whiteSpace: 'pre',
+}
+const dl: React.CSSProperties = {
+  display: 'grid',
+  gridTemplateColumns: '120px 1fr',
+  gap: '6px 16px',
+  fontSize: 14,
+  margin: 0,
 }
