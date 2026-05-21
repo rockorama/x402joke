@@ -136,6 +136,11 @@ const RETRYABLE_VERIFY_REASONS: ReadonlySet<string> = new Set([
   'unexpected_verify_error',
 ])
 const MAX_VERIFY_ATTEMPTS = 2
+// Pause before re-calling verify. Same stale-RPC race that motivates the
+// buyer-side pre-submit delay — letting the facilitator's RPC pool catch up
+// gives the second attempt a meaningfully better chance than an immediate
+// re-call.
+const VERIFY_RETRY_DELAY_MS = 1_000
 
 // x402-next's `verifyPayment` returns the *bare* `invalidReason` when the
 // facilitator answers 200 with `isValid:false`, but when the facilitator
@@ -186,6 +191,7 @@ export async function POST(request: NextRequest): Promise<Response> {
     if (!reason || !RETRYABLE_VERIFY_REASONS.has(reason)) break
     attempt++
     console.warn(`[x402joker] verify retry attempt=${attempt} previousReason=${reason}`)
+    await new Promise((resolve) => setTimeout(resolve, VERIFY_RETRY_DELAY_MS))
     response = await x402Handler(request)
   }
   if (response.status >= 400) {
