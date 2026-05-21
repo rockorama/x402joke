@@ -107,7 +107,12 @@ const x402Handler = withX402(
     config: {
       description: 'A custom Claude-generated joke, delivered fresh.',
       mimeType: 'application/json',
-      maxTimeoutSeconds: 60,
+      // Base block confirmation can run 10–28s and the CDP facilitator's own
+      // verify queue adds further latency. The spec's `validBefore < now + 6s`
+      // floor + observed end-to-end timings put 60s at the edge; 120s gives
+      // headroom for the facilitator to ingest a freshly-signed authorization
+      // before its window expires. See HIG-126.
+      maxTimeoutSeconds: 120,
     },
   },
   {
