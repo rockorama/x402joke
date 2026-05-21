@@ -105,7 +105,8 @@ const x402Handler = withX402(
     price: config.price,
     network: config.network,
     config: {
-      description: 'A custom Claude-generated joke, delivered fresh.',
+      description:
+        'Pay-per-joke vending machine: send USDC, get a fresh Claude-generated joke. Optional "theme" picks the topic.',
       mimeType: 'application/json',
       // Base block confirmation can run 10–28s and the CDP facilitator's own
       // verify queue adds further latency. The spec's `validBefore < now + 6s`
@@ -113,6 +114,30 @@ const x402Handler = withX402(
       // headroom for the facilitator to ingest a freshly-signed authorization
       // before its window expires. See HIG-126.
       maxTimeoutSeconds: 120,
+      // x402 Bazaar discovery metadata. x402-next spreads these into
+      // paymentRequirements.outputSchema.input / .output; the CDP facilitator
+      // catalogs the resource on its first paid /verify call, so a single
+      // settled purchase puts the endpoint into the public Bazaar listing
+      // (GET https://api.cdp.coinbase.com/platform/v2/x402/discovery/resources).
+      discoverable: true,
+      inputSchema: {
+        bodyType: 'json',
+        bodyFields: {
+          theme: {
+            type: 'string',
+            required: false,
+            description: 'Optional joke theme. Omit for a surprise joke.',
+            example: 'corgis',
+          },
+        },
+      },
+      outputSchema: {
+        type: 'json',
+        example: {
+          joke: "I told my dog he's adopted. He didn't take it well — turns out he already knew, he just hadn't found the right moment to bring it up.",
+          theme: 'dogs',
+        },
+      },
     },
   },
   {
