@@ -98,7 +98,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   })
 }
 
-export const POST = withX402(
+const x402Handler = withX402(
   handler,
   config.payee,
   {
@@ -115,3 +115,72 @@ export const POST = withX402(
     ...(isCdpFacilitator ? { createAuthHeaders: createCdpAuthHeaders } : {}),
   },
 )
+
+// x402 spec error codes (subset of ErrorReasons in coinbase/x402 core) where
+// re-calling the facilitator's /verify with the SAME X-PAYMENT is worth a try
+// — the rejection looks structural (`invalid_payload`) or signature-/time-
+// related but the underlying authorization is still valid. Excludes terminal
+// mismatches the buyer would have to re-sign for (`insufficient_funds`,
+// `invalid_payment_requirements`, `invalid_scheme`, …).
+const RETRYABLE_VERIFY_REASONS: ReadonlySet<string> = new Set([
+  'invalid_payload',
+  'invalid_exact_evm_payload_signature',
+  'invalid_exact_evm_payload_authorization_valid_before',
+  'invalid_exact_evm_payload_authorization_valid_after',
+  'payment_expired',
+  'unexpected_verify_error',
+])
+const MAX_VERIFY_ATTEMPTS = 2
+
+function parseVerifyErrorReason(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body)
+    return parsed && typeof parsed === 'object' && typeof parsed.error === 'string' ? parsed.error : null
+  } catch {
+    return null
+  }
+}
+
+// withX402 calls the CDP facilitator's /verify before invoking our handler.
+// We've measured ~25% of first-verify calls returning `invalid_payload` for
+// authorizations that subsequently verify cleanly when re-sent moments later
+// — the rejection isn't reproducible from the signed bytes, so it points at a
+// transient facilitator-side race (cold cache / replication lag against the
+// EOA we just topped up). Re-invoking the handler is safe: the buyer's body
+// stream is only consumed AFTER verify passes, so a 402 from attempt #1
+// leaves the request body intact for attempt #2. Also reads the rejection
+// body back on the FINAL non-2xx so failures land in the runtime logs with
+// status + payer + facilitator reason.
+export async function POST(request: NextRequest): Promise<Response> {
+  let response = await x402Handler(request)
+  let attempt = 1
+  while (attempt < MAX_VERIFY_ATTEMPTS && response.status === 402) {
+    let body = ''
+    try {
+      body = await response.clone().text()
+    } catch {}
+    const reason = parseVerifyErrorReason(body)
+    if (!reason || !RETRYABLE_VERIFY_REASONS.has(reason)) break
+    attempt++
+    console.warn(`[x402joker] verify retry attempt=${attempt} previousReason=${reason}`)
+    response = await x402Handler(request)
+  }
+  if (response.status >= 400) {
+    let body = ''
+    try {
+      body = await response.clone().text()
+    } catch {}
+    const paymentHeader = request.headers.get('X-PAYMENT')
+    let payer = 'unknown'
+    if (paymentHeader) {
+      try {
+        const decoded = exact.evm.decodePayment(paymentHeader).payload
+        if ('authorization' in decoded) payer = decoded.authorization.from
+      } catch {}
+    }
+    console.error(
+      `[x402joker] payment rejected status=${response.status} attempt=${attempt} payer=${payer} body=${body.slice(0, 1000)}`,
+    )
+  }
+  return response
+}
