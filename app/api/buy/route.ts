@@ -132,10 +132,20 @@ const RETRYABLE_VERIFY_REASONS: ReadonlySet<string> = new Set([
 ])
 const MAX_VERIFY_ATTEMPTS = 2
 
+// x402-next's `verifyPayment` returns the *bare* `invalidReason` when the
+// facilitator answers 200 with `isValid:false`, but when the facilitator
+// answers non-200 useFacilitator throws a `VerifyError` whose message is
+// `"Failed to verify payment: <invalidReason>"` — withX402's catch echoes
+// that string into the response `error` field. Strip the prefix so the
+// retry-set comparison sees the same x402 spec token in both shapes.
+const VERIFY_ERROR_PREFIX = 'Failed to verify payment: '
+
 function parseVerifyErrorReason(body: string): string | null {
   try {
     const parsed = JSON.parse(body)
-    return parsed && typeof parsed === 'object' && typeof parsed.error === 'string' ? parsed.error : null
+    const raw = parsed && typeof parsed === 'object' && typeof parsed.error === 'string' ? parsed.error : null
+    if (!raw) return null
+    return raw.startsWith(VERIFY_ERROR_PREFIX) ? raw.slice(VERIFY_ERROR_PREFIX.length) : raw
   } catch {
     return null
   }
