@@ -152,6 +152,14 @@ function parseVerifyErrorReason(body: string): string | null {
 // body back on the FINAL non-2xx so failures land in the runtime logs with
 // status + payer + facilitator reason.
 export async function POST(request: NextRequest): Promise<Response> {
+  // No X-PAYMENT means this is the standard x402 protocol kickoff (client
+  // asking us for `accepts:[...]`). Return the 402 unchanged — retry and
+  // rejection-log only apply when a payment was actually presented.
+  const paymentHeader = request.headers.get('X-PAYMENT')
+  if (!paymentHeader) {
+    return await x402Handler(request)
+  }
+
   let response = await x402Handler(request)
   let attempt = 1
   while (attempt < MAX_VERIFY_ATTEMPTS && response.status === 402) {
@@ -170,14 +178,11 @@ export async function POST(request: NextRequest): Promise<Response> {
     try {
       body = await response.clone().text()
     } catch {}
-    const paymentHeader = request.headers.get('X-PAYMENT')
     let payer = 'unknown'
-    if (paymentHeader) {
-      try {
-        const decoded = exact.evm.decodePayment(paymentHeader).payload
-        if ('authorization' in decoded) payer = decoded.authorization.from
-      } catch {}
-    }
+    try {
+      const decoded = exact.evm.decodePayment(paymentHeader).payload
+      if ('authorization' in decoded) payer = decoded.authorization.from
+    } catch {}
     console.error(
       `[x402joker] payment rejected status=${response.status} attempt=${attempt} payer=${payer} body=${body.slice(0, 1000)}`,
     )
