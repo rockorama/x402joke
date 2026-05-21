@@ -135,10 +135,15 @@ const RETRYABLE_VERIFY_REASONS: ReadonlySet<string> = new Set([
   'payment_expired',
   'unexpected_verify_error',
 ])
-const MAX_VERIFY_ATTEMPTS = 2
+// 1 initial + 3 retries. Observed pattern: ~3/5 calls fail on attempt #1 and
+// can succeed as late as attempt #3 (2nd retry). 4 attempts × ~3–5s verify
+// latency + 3 × 1s delays stays well inside the 120s `maxTimeoutSeconds`
+// budget; the retryable-reasons gate keeps permanent failures (insufficient
+// funds, recipient mismatch, …) from looping.
+const MAX_VERIFY_ATTEMPTS = 4
 // Pause before re-calling verify. Same stale-RPC race that motivates the
 // buyer-side pre-submit delay — letting the facilitator's RPC pool catch up
-// gives the second attempt a meaningfully better chance than an immediate
+// gives the next attempt a meaningfully better chance than an immediate
 // re-call.
 const VERIFY_RETRY_DELAY_MS = 1_000
 
