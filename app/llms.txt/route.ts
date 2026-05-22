@@ -1,9 +1,10 @@
 import { headers } from 'next/headers'
 
+import { formatPrice } from '../../src/price'
+
 export const dynamic = 'force-dynamic'
 
-const RAW_PRICE = process.env.JOKE_PRICE_USD || '$0.01'
-const PRICE = (RAW_PRICE.startsWith('$') ? RAW_PRICE : `$${RAW_PRICE}`).replace('$.', '$0.')
+const PRICE = formatPrice(process.env.JOKE_PRICE_USD || '$0.01')
 const NETWORK = process.env.X402_NETWORK || 'base'
 const PAYEE = process.env.JOKE_SHOP_PAYEE_ADDRESS || ''
 const USDC = NETWORK === 'base-sepolia'

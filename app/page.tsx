@@ -1,12 +1,9 @@
 import { headers } from 'next/headers'
 
+import { formatPrice } from '../src/price'
+
 export const dynamic = 'force-dynamic'
 
-function formatPrice(raw: string): string {
-  const stripped = raw.replace(/^\$/, '')
-  const normalized = stripped.startsWith('.') ? `0${stripped}` : stripped
-  return `$${normalized}`
-}
 const PRICE = formatPrice(process.env.JOKE_PRICE_USD || '$0.01')
 const NETWORK = process.env.X402_NETWORK || 'base'
 const PAYEE = process.env.JOKE_SHOP_PAYEE_ADDRESS || ''
