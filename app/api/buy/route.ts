@@ -191,6 +191,98 @@ function parseVerifyErrorReason(body: string): string | null {
   }
 }
 
+// Per-instance idempotency cache keyed by (authorization.from, nonce). If the
+// same X-PAYMENT lands twice on the same warm Lambda, we skip the entire
+// withX402 verify+handler+settle round-trip and return the previously-produced
+// joke. Saves a Claude API call AND avoids the `duplicate_settlement` 402 a
+// second settle would produce against an already-consumed authorization.
+// Limitation: in-memory only — Vercel cold starts on a fresh instance miss
+// the cache. Fixing that would need an external KV store; out of scope for
+// the demo, but a buyer that retries within a few hundred ms typically hits
+// the same warm worker.
+type CachedPaidResponse = {
+  status: number
+  body: string
+  contentType: string | null
+  paymentResponseHeader: string | null
+  validBeforeUnix: number
+  storedAtUnix: number
+}
+const CACHE_MAX_ENTRIES = 200
+const paidResponseCache = new Map<string, CachedPaidResponse>()
+
+function paymentCacheKey(from: string, nonce: string): string {
+  return `${from.toLowerCase()}:${nonce.toLowerCase()}`
+}
+
+function getCachedPaidResponse(key: string): CachedPaidResponse | null {
+  const entry = paidResponseCache.get(key)
+  if (!entry) return null
+  const nowUnix = Math.floor(Date.now() / 1000)
+  if (nowUnix >= entry.validBeforeUnix) {
+    // Authorization window closed — the signed bytes can no longer be used
+    // even if a buyer replays them, so the cached response is irrelevant.
+    paidResponseCache.delete(key)
+    return null
+  }
+  // LRU touch: re-insert to move to the back of the iteration order.
+  paidResponseCache.delete(key)
+  paidResponseCache.set(key, entry)
+  return entry
+}
+
+function putCachedPaidResponse(key: string, entry: CachedPaidResponse): void {
+  if (!paidResponseCache.has(key) && paidResponseCache.size >= CACHE_MAX_ENTRIES) {
+    const oldest = paidResponseCache.keys().next().value
+    if (oldest !== undefined) paidResponseCache.delete(oldest)
+  }
+  paidResponseCache.set(key, entry)
+}
+
+// Each X-PAYMENT bytes-tuple is single-use on-chain (the EIP-3009 nonce can
+// only be consumed once), so the response we send for a given X-PAYMENT is
+// effectively content-addressed by the header — it can never legitimately
+// change. We hint the CDN to cache aggressively, keyed by the header value,
+// so a buyer that retries the same payload lands on Vercel's edge cache
+// instead of cold-starting our Lambda again (which would re-call Claude and
+// then get `duplicate_settlement` back from the facilitator).
+//
+// Vercel's edge does not cache POST responses by default; the headers are
+// belt-and-suspenders behind the in-memory cache below — they pay off when
+// (a) Vercel lifts the POST-cache restriction, or (b) the seller sits behind
+// a different CDN that does honour POST caching. Cost of setting them when
+// nothing honours them: zero.
+const REPLAY_CACHE_CONTROL = 'public, s-maxage=31536000, immutable'
+const REPLAY_VARY = 'X-PAYMENT'
+
+function applyReplayCacheHeaders(headers: Headers): void {
+  headers.set('Cache-Control', REPLAY_CACHE_CONTROL)
+  headers.set('Vary', REPLAY_VARY)
+}
+
+function reconstructResponse(entry: CachedPaidResponse): Response {
+  const headers = new Headers()
+  if (entry.contentType) headers.set('Content-Type', entry.contentType)
+  if (entry.paymentResponseHeader) headers.set('X-PAYMENT-RESPONSE', entry.paymentResponseHeader)
+  applyReplayCacheHeaders(headers)
+  return new Response(entry.body, { status: entry.status, headers })
+}
+
+type DecodedAuthorization = { from: string; nonce: string; validBeforeUnix: number }
+
+function decodeAuthorization(paymentHeader: string): DecodedAuthorization | null {
+  try {
+    const decoded = exact.evm.decodePayment(paymentHeader).payload
+    if (!('authorization' in decoded)) return null
+    const { from, nonce, validBefore } = decoded.authorization
+    const validBeforeUnix = Number(validBefore)
+    if (!Number.isFinite(validBeforeUnix)) return null
+    return { from, nonce, validBeforeUnix }
+  } catch {
+    return null
+  }
+}
+
 // withX402 calls the CDP facilitator's /verify before invoking our handler.
 // We've measured ~25% of first-verify calls returning `invalid_payload` for
 // authorizations that subsequently verify cleanly when re-sent moments later
@@ -203,11 +295,25 @@ function parseVerifyErrorReason(body: string): string | null {
 // status + payer + facilitator reason.
 export async function POST(request: NextRequest): Promise<Response> {
   // No X-PAYMENT means this is the standard x402 protocol kickoff (client
-  // asking us for `accepts:[...]`). Return the 402 unchanged — retry and
-  // rejection-log only apply when a payment was actually presented.
+  // asking us for `accepts:[...]`). Return the 402 unchanged — retry, cache,
+  // and rejection-log only apply when a payment was actually presented.
   const paymentHeader = request.headers.get('X-PAYMENT')
   if (!paymentHeader) {
     return await x402Handler(request)
+  }
+
+  // Idempotency: a buyer that retries the same signed X-PAYMENT (same nonce)
+  // should get the same joke back without burning a fresh Claude call OR a
+  // facilitator settle that's just going to come back `duplicate_settlement`.
+  // We key by the bytes that uniquely identify the authorization on-chain.
+  const auth = decodeAuthorization(paymentHeader)
+  const cacheKey = auth ? paymentCacheKey(auth.from, auth.nonce) : null
+  if (cacheKey) {
+    const cached = getCachedPaidResponse(cacheKey)
+    if (cached) {
+      console.log(`[x402joker] idempotent cache hit payer=${auth!.from} nonce=${auth!.nonce}`)
+      return reconstructResponse(cached)
+    }
   }
 
   let response = await x402Handler(request)
@@ -224,16 +330,36 @@ export async function POST(request: NextRequest): Promise<Response> {
     await new Promise((resolve) => setTimeout(resolve, VERIFY_RETRY_DELAY_MS))
     response = await x402Handler(request)
   }
+
+  // Only successful settlements are worth caching: 4xx are usually transient
+  // and could resolve on the buyer's next attempt, and caching them would
+  // sabotage the buyer's recovery path. 2xx means handler ran + settle landed
+  // — both expensive, both safe to short-circuit on replay.
+  if (cacheKey && auth && response.status >= 200 && response.status < 300) {
+    try {
+      const body = await response.clone().text()
+      const contentType = response.headers.get('content-type')
+      const paymentResponseHeader = response.headers.get('x-payment-response')
+      putCachedPaidResponse(cacheKey, {
+        status: response.status,
+        body,
+        contentType,
+        paymentResponseHeader,
+        validBeforeUnix: auth.validBeforeUnix,
+        storedAtUnix: Math.floor(Date.now() / 1000),
+      })
+    } catch {}
+    // Also let the CDN cache the fresh response — the in-memory cache above is
+    // the L2 behind the edge. See `applyReplayCacheHeaders` for the rationale.
+    applyReplayCacheHeaders(response.headers)
+  }
+
   if (response.status >= 400) {
     let body = ''
     try {
       body = await response.clone().text()
     } catch {}
-    let payer = 'unknown'
-    try {
-      const decoded = exact.evm.decodePayment(paymentHeader).payload
-      if ('authorization' in decoded) payer = decoded.authorization.from
-    } catch {}
+    const payer = auth?.from ?? 'unknown'
     console.error(
       `[x402joker] payment rejected status=${response.status} attempt=${attempt} payer=${payer} body=${body.slice(0, 1000)}`,
     )
