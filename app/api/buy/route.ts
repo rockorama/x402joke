@@ -5,12 +5,13 @@ import { withX402 } from 'x402-next'
 
 import { config } from '../../../src/config'
 import { generateJoke } from '../../../src/jokes'
+import {
+  cdpHost,
+  parseVerifyErrorReason,
+  RETRYABLE_VERIFY_REASONS,
+} from '../../../src/x402-helpers'
 
 const isCdpFacilitator = config.facilitatorUrl.startsWith('https://api.cdp.coinbase.com')
-
-function cdpHost(url: string): string {
-  return new URL(url).host
-}
 
 async function createCdpAuthHeaders() {
   if (!config.cdpApiKeyId || !config.cdpApiKeySecret) {
@@ -146,20 +147,6 @@ const x402Handler = withX402(
   },
 )
 
-// x402 spec error codes (subset of ErrorReasons in coinbase/x402 core) where
-// re-calling the facilitator's /verify with the SAME X-PAYMENT is worth a try
-// — the rejection looks structural (`invalid_payload`) or signature-/time-
-// related but the underlying authorization is still valid. Excludes terminal
-// mismatches the buyer would have to re-sign for (`insufficient_funds`,
-// `invalid_payment_requirements`, `invalid_scheme`, …).
-const RETRYABLE_VERIFY_REASONS: ReadonlySet<string> = new Set([
-  'invalid_payload',
-  'invalid_exact_evm_payload_signature',
-  'invalid_exact_evm_payload_authorization_valid_before',
-  'invalid_exact_evm_payload_authorization_valid_after',
-  'payment_expired',
-  'unexpected_verify_error',
-])
 // 1 initial + 3 retries. Observed pattern: ~3/5 calls fail on attempt #1 and
 // can succeed as late as attempt #3 (2nd retry). 4 attempts × ~3–5s verify
 // latency + 3 × 1s delays stays well inside the 120s `maxTimeoutSeconds`
@@ -171,25 +158,6 @@ const MAX_VERIFY_ATTEMPTS = 4
 // gives the next attempt a meaningfully better chance than an immediate
 // re-call.
 const VERIFY_RETRY_DELAY_MS = 1_000
-
-// x402-next's `verifyPayment` returns the *bare* `invalidReason` when the
-// facilitator answers 200 with `isValid:false`, but when the facilitator
-// answers non-200 useFacilitator throws a `VerifyError` whose message is
-// `"Failed to verify payment: <invalidReason>"` — withX402's catch echoes
-// that string into the response `error` field. Strip the prefix so the
-// retry-set comparison sees the same x402 spec token in both shapes.
-const VERIFY_ERROR_PREFIX = 'Failed to verify payment: '
-
-function parseVerifyErrorReason(body: string): string | null {
-  try {
-    const parsed = JSON.parse(body)
-    const raw = parsed && typeof parsed === 'object' && typeof parsed.error === 'string' ? parsed.error : null
-    if (!raw) return null
-    return raw.startsWith(VERIFY_ERROR_PREFIX) ? raw.slice(VERIFY_ERROR_PREFIX.length) : raw
-  } catch {
-    return null
-  }
-}
 
 // withX402 calls the CDP facilitator's /verify before invoking our handler.
 // We've measured ~25% of first-verify calls returning `invalid_payload` for
