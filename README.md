@@ -1,6 +1,6 @@
 # x402joker
 
-Tiny standalone x402 seller. Takes USDC, returns a Claude-generated joke. Stateless.
+Tiny standalone x402 seller. Takes USDC, returns a Claude-generated joke. No durable state — no DB, no auth; the only state is a best-effort per-Lambda idempotency cache (see Caching).
 
 Built as a Next.js app so it deploys to Vercel with a `git push`. Uses the `x402-next` `withX402` wrapper for the payment protocol, signs against the Coinbase CDP facilitator by default, and registers itself with the x402 Bazaar.
 
@@ -89,6 +89,6 @@ The same signed `X-PAYMENT` (same EIP-3009 `from` + `nonce`) is single-use on-ch
 
 ## Notes
 
-- Stateless — no DB, no auth. Buyer keeps their joke.
+- No durable state — no DB, no auth. Buyer keeps their joke. The in-memory idempotency cache above is the only state, and it's per-Lambda and bounded.
 - `withX402` only settles on the facilitator **after** a successful (<400) handler response, so failed joke generations won't charge the buyer.
 - See `DEBUG.md` for step-by-step curl probes (kickoff → sign via Hightop → buy → direct facilitator verify → error cases).
